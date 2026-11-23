@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "monitors": [
+    {
+      "id": "example-http",
+      "name": "Example Website",
+      "type": "http",
+      "enabled": true,
+      "target": "https://google.com",
+      "interval": "10m",
+      "timeout": "10s",
+      "http": {"method": "GET", "expected_status": [200]}
+    },
+    {
+      "id": "example-dns",
+      "name": "Example DNS",
+      "type": "dns",
+      "enabled": true,
+      "target": "google.com",
+      "interval": "30m",
+      "dns": {"record_type": "A", "resolvers": ["system", "google", "cloudflare"]}
+    }
+  ],
+  "settings": {
+    "tolerance": "2m",
+    "failure_threshold": 3,
+    "recovery_threshold": 2
+  }
+}
