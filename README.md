@@ -22,7 +22,21 @@ go run . -run -force
 go run . -config config/monitors.json
 ```
 
-チェック結果は `data/state/current.json`、日ごとの履歴は `data/history/YYYY/MM/DD.json`、状態は `data/state/monitor_states.json` に保存します。監視対象の失敗は JSON 結果として出力し、設定・内部エラーは終了コード 1 になります。
+Windows PowerShell で1回だけ試す場合も同じです。結果の書き込み先は `-data-dir` で一時フォルダーに変更できます。
+
+```powershell
+go run . -run -force -data-dir .tmp-pulse-data
+```
+
+チェック結果は `data/state/current.json`、日ごとの履歴は `data/history/YYYY/MM/DD.json`、状態は `data/state/monitor_states.json` に保存します。監視対象の失敗はJSON結果として保存します。
+
+## GitHub Actionsで使う
+
+GitHub Appの作成とインストール後、対象リポジトリのRepository variableに `INALY_APP_ID`、Actions secretsに `INALY_APP_PRIVATE_KEY` を登録します。認証付きHTTP監視を使うときは `INALY_MONITOR_SECRETS` も登録します。AppにはMetadata read、Contents writeを設定し、対象リポジトリだけにインストールしてください。
+
+対象リポジトリに [`docs/target-workflow.yml`](docs/target-workflow.yml) の内容を `.github/workflows/inaly-pulse.yml` として配置します。Reusable workflowは公開リポジトリ `LingXuan-Li/inaly_pulse` の `main` branchを参照します。独自forkやtagを使う場合はworkflowの参照先を変更してください。
+
+認証したAppはデフォルトブランチへ監視JSONを直接コミットします。ブランチ保護を使う場合、Appに限定したbypassを設定するか、書き込みが拒否される構成を解消する必要があります。App ID・秘密鍵を設定する前のローカル実行はローカルJSONだけを更新します。
 
 ## 設定例
 
@@ -67,7 +81,7 @@ go run . -config config/monitors.json
 }
 ```
 
-Interval は10分以上の10分単位です。`ping` は GitHub-hosted runner 上での実行可否が未確定のため、この初期実装では拒否します。現段階の DNS チェックでは OS 標準 Resolver を使います。TTL / RCODEを取得するDNS wire実装、GitHub App / Git Data API、Issues、Maintenance、Outbox、Discord、レポート集計、SSRF防御は未実装であり、Actionsへ本番接続する前に必要です。
+Interval は10分以上の10分単位です。`ping` はこの初期実装では拒否します。DNSはOS標準、Google、Cloudflare Resolverに問い合わせますが、TTL/RCODEは取得しません。GitHub App認証とGit Data API保存は実装済みです。GitHub IssuesによるIncident管理、Maintenance、Outbox/Discord通知、レポート集計はまだ未実装です。本番運用に必要なこれらの仕様は後続実装が必要です。
 
 ## 開発
 

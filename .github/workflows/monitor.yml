@@ -7,6 +7,11 @@ on:
         description: GitHub App ID
         required: true
         type: string
+      force:
+        description: Run enabled monitors even if their interval has not elapsed
+        required: false
+        type: boolean
+        default: false
     secrets:
       INALY_APP_PRIVATE_KEY:
         required: true
@@ -32,7 +37,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: LingXuan-Li/inaly_pulse
-          ref: v1
+          ref: main
           path: .inaly-pulse
 
       - name: Set up Go
@@ -48,4 +53,8 @@ jobs:
           INALY_APP_PRIVATE_KEY: ${{ secrets.INALY_APP_PRIVATE_KEY }}
           INALY_MONITOR_SECRETS: ${{ secrets.INALY_MONITOR_SECRETS }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: go run . -config ../config/monitors.json -data-dir ../data -run
+          INALY_FORCE: ${{ inputs.force }}
+        run: |
+          args="-config ../config/monitors.json -data-dir ../data -run"
+          if [ "$INALY_FORCE" = "true" ]; then args="$args -force"; fi
+          go run . $args

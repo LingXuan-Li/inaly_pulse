@@ -1,0 +1,25 @@
+# Copy this file to .github/workflows/inaly-pulse.yml in a monitored repository.
+name: Inaly Pulse
+
+on:
+  schedule:
+    - cron: "2,12,22,32,42,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Run all enabled monitors now
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    uses: LingXuan-Li/inaly_pulse/.github/workflows/monitor.yml@main
+    with:
+      app_id: ${{ vars.INALY_APP_ID }}
+      force: ${{ inputs.force }}
+    secrets:
+      INALY_APP_PRIVATE_KEY: ${{ secrets.INALY_APP_PRIVATE_KEY }}
+      INALY_MONITOR_SECRETS: ${{ secrets.INALY_MONITOR_SECRETS }}

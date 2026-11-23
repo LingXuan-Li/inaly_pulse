@@ -71,7 +71,9 @@ func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckRes
 			r.Error = err.Error()
 			break
 		}
-		client := &http.Client{Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.DialContext = secureDialContext
+		client := &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if err := validateMonitorURL(req.URL.String()); err != nil {
 				return fmt.Errorf("redirect rejected: %w", err)
 			}
@@ -128,7 +130,9 @@ func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckRes
 			r.Error = err.Error()
 			break
 		}
-		conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", m.Target)
+		dialCtx, dialCancel := context.WithTimeout(ctx, timeout)
+		conn, err := secureDialContext(dialCtx, "tcp", m.Target)
+		dialCancel()
 		if err != nil {
 			r.Status = statusForError(err)
 			r.Error = safeError(err)
@@ -265,6 +269,41 @@ func validateResolvedTarget(ctx context.Context, target string) error {
 		}
 	}
 	return nil
+}
+
+func secureDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("invalid network address")
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if !publicAddress(ip) {
+			return nil, fmt.Errorf("private or special-use IP targets are not allowed")
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	}
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return nil, fmt.Errorf("localhost targets are not allowed")
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve target: %w", err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("target has no addresses")
+	}
+	var last error
+	for _, ip := range ips {
+		if !publicAddress(ip) {
+			return nil, fmt.Errorf("private or special-use IP targets are not allowed")
+		}
+		conn, e := (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if e == nil {
+			return conn, nil
+		}
+		last = e
+	}
+	return nil, last
 }
 
 func applyAuthentication(req *http.Request, m MonitorConfig) error {
