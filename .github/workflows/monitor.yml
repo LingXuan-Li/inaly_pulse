@@ -1,0 +1,51 @@
+name: Inaly Pulse reusable monitor
+
+on:
+  workflow_call:
+    inputs:
+      app_id:
+        description: GitHub App ID
+        required: true
+        type: string
+    secrets:
+      INALY_APP_PRIVATE_KEY:
+        required: true
+      INALY_MONITOR_SECRETS:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inaly-pulse-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Inaly Pulse
+        uses: actions/checkout@v4
+        with:
+          repository: LingXuan-Li/inaly_pulse
+          ref: v1
+          path: .inaly-pulse
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: .inaly-pulse/go.mod
+          cache-dependency-path: .inaly-pulse/go.mod
+
+      - name: Run monitors and save JSON through GitHub App
+        working-directory: .inaly-pulse
+        env:
+          INALY_APP_ID: ${{ inputs.app_id }}
+          INALY_APP_PRIVATE_KEY: ${{ secrets.INALY_APP_PRIVATE_KEY }}
+          INALY_MONITOR_SECRETS: ${{ secrets.INALY_MONITOR_SECRETS }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: go run . -config ../config/monitors.json -data-dir ../data -run

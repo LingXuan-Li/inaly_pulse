@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"inaly_pulse/internal/app"
+	"inaly_pulse/internal/githubapp"
 )
 
 func main() {
