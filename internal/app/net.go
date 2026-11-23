@@ -2,10 +2,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -14,12 +18,29 @@ func validHTTPURL(s string) bool {
 	u, e := url.ParseRequestURI(s)
 	return e == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https")
 }
-func splitHostPort(s string) (string, string, error) {
-	h, p, e := net.SplitHostPort(s)
-	if e != nil {
-		return "", "", e
+
+func splitHostPort(s string)(string,string,error){return net.SplitHostPort(s)}
+
+func validateMonitorURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return fmt.Errorf("invalid URL host")
 	}
-	return h, p, nil
+	if u.User != nil {
+		return fmt.Errorf("URL userinfo is not allowed")
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return fmt.Errorf("localhost targets are not allowed")
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && !publicAddress(ip) {
+		return fmt.Errorf("private or special-use IP targets are not allowed")
+	}
+	return nil
+}
+
+func publicAddress(ip netip.Addr) bool {
+	return ip.IsValid() && ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
 func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckResult {
@@ -36,7 +57,7 @@ func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckRes
 		req, err := http.NewRequestWithContext(ctx, method, m.Target, strings.NewReader(m.HTTP.Body))
 		if err != nil {
 			r.Status = "failure"
-			r.Error = err.Error()
+			r.Error = "invalid HTTP request"
 			break
 		}
 		for k, v := range m.HTTP.Headers {
@@ -45,7 +66,15 @@ func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckRes
 		if m.HTTP.ContentType != "" {
 			req.Header.Set("Content-Type", m.HTTP.ContentType)
 		}
+		if err := applyAuthentication(req, m); err != nil {
+			r.Status = "failure"
+			r.Error = err.Error()
+			break
+		}
 		client := &http.Client{Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if err := validateMonitorURL(req.URL.String()); err != nil {
+				return fmt.Errorf("redirect rejected: %w", err)
+			}
 			if m.HTTP.FollowRedirects != nil && !*m.HTTP.FollowRedirects {
 				return http.ErrUseLastResponse
 			}
@@ -61,23 +90,25 @@ func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckRes
 			break
 		}
 		defer resp.Body.Close()
-		if method == http.MethodHead {
-			r.Details = map[string]any{"status_code": resp.StatusCode, "response_bytes": 0}
-		} else {
-			body := make([]byte, 1<<20+1)
-			n, e := resp.Body.Read(body)
-			if e != nil && e.Error() != "EOF" {
+		body := []byte{}
+		if method != http.MethodHead {
+			body, err = io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+			if err != nil {
 				r.Status = "failure"
 				r.Error = "read response body failed"
 				break
 			}
-			body = body[:n]
-			r.Details = map[string]any{"status_code": resp.StatusCode, "response_bytes": n}
-			if m.HTTP.ExpectedText != "" && !strings.Contains(string(body), m.HTTP.ExpectedText) {
+			if len(body) > 1<<20 {
 				r.Status = "failure"
-				r.Error = "response did not contain expected_text"
+				r.Error = "response body exceeds 1 MiB"
 				break
 			}
+		}
+		r.Details = map[string]any{"status_code": resp.StatusCode, "response_bytes": len(body)}
+		if m.HTTP.ExpectedText != "" && !strings.Contains(string(body), m.HTTP.ExpectedText) {
+			r.Status = "failure"
+			r.Error = "response did not contain expected_text"
+			break
 		}
 		ok := len(m.HTTP.ExpectedStatus) == 0 && resp.StatusCode >= 200 && resp.StatusCode < 400
 		for _, s := range m.HTTP.ExpectedStatus {
@@ -92,6 +123,11 @@ func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckRes
 			r.Error = fmt.Sprintf("unexpected HTTP status %d", resp.StatusCode)
 		}
 	case "tcp":
+		if err := validateResolvedTarget(ctx, m.Target); err != nil {
+			r.Status = "failure"
+			r.Error = err.Error()
+			break
+		}
 		conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", m.Target)
 		if err != nil {
 			r.Status = statusForError(err)
@@ -102,53 +138,168 @@ func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckRes
 		r.Status = "success"
 	case "dns":
 		host := strings.TrimSuffix(m.Target, ".")
-		lookupType := m.DNS.RecordType
-		if lookupType == "" {
-			lookupType = "A"
+		record := m.DNS.RecordType
+		if record == "" {
+			record = "A"
 		}
-		resolver := net.DefaultResolver
-		if len(m.DNS.Resolvers) > 0 && len(m.DNS.Resolvers) < 3 {
+		resolvers := m.DNS.Resolvers
+		if len(resolvers) == 0 {
+			resolvers = []string{"system", "google", "cloudflare"}
+		}
+		type answer struct {
+			Resolver string        `json:"resolver"`
+			Response []string      `json:"response,omitempty"`
+			Error    string        `json:"error,omitempty"`
+			Duration time.Duration `json:"duration"`
+		}
+		answers := make([]answer, 0, len(resolvers))
+		successes := 0
+		for _, name := range resolvers {
+			begin := time.Now()
+			resolver := makeResolver(name)
+			values, err := lookupDNS(ctx, resolver, host, record)
+			a := answer{Resolver: name, Response: values, Duration: time.Since(begin)}
+			if err != nil {
+				a.Error = err.Error()
+			} else {
+				successes++
+			}
+			answers = append(answers, a)
+		}
+		if successes == 0 {
 			r.Status = "failure"
-			r.Error = "resolver selection must include all configured resolvers in this build"
-			break
-		}
-		var values []string
-		var err error
-		switch lookupType {
-		case "A", "AAAA":
-			values, err = resolver.LookupHost(ctx, host)
-		case "CNAME":
-			var v string
-			v, err = resolver.LookupCNAME(ctx, host)
-			if err == nil {
-				values = []string{v}
-			}
-		case "MX":
-			var v []*net.MX
-			v, err = resolver.LookupMX(ctx, host)
-			for _, x := range v {
-				values = append(values, fmt.Sprintf("%s %d", x.Host, x.Pref))
-			}
-		case "TXT":
-			values, err = resolver.LookupTXT(ctx, host)
-		case "NS":
-			var v []*net.NS
-			v, err = resolver.LookupNS(ctx, host)
-			for _, x := range v {
-				values = append(values, x.Host)
-			}
-		}
-		if err != nil {
-			r.Status = statusForError(err)
-			r.Error = safeError(err)
+			r.Error = "all DNS resolvers failed"
 		} else {
 			r.Status = "success"
-			r.Details = map[string]any{"query": host, "record_type": lookupType, "resolver": "system", "response": values}
+			r.Details = map[string]any{"query": host, "record_type": record, "resolver_results": answers, "warning": successes < len(answers)}
 		}
 	}
 	r.FinishedAt = time.Now().UTC()
 	r.Duration = r.FinishedAt.Sub(started)
 	return r
+}
+
+func makeResolver(name string) *net.Resolver {
+	if name == "system" {
+		return net.DefaultResolver
+	}
+	address := "8.8.8.8:53"
+	if name == "cloudflare" {
+		address = "1.1.1.1:53"
+	}
+	return &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "udp", address)
+	}}
+}
+
+func lookupDNS(ctx context.Context, resolver *net.Resolver, host, record string) ([]string, error) {
+	switch record {
+	case "A":
+		return resolver.LookupHost(ctx, host)
+	case "AAAA":
+		all, err := resolver.LookupNetIP(ctx, "ip6", host)
+		values := make([]string, 0, len(all))
+		for _, ip := range all {
+			if ip.Is6() {
+				values = append(values, ip.String())
+			}
+		}
+		return values, err
+	case "CNAME":
+		v, e := resolver.LookupCNAME(ctx, host)
+		if e != nil {
+			return nil, e
+		}
+		return []string{v}, nil
+	case "MX":
+		v, e := resolver.LookupMX(ctx, host)
+		if e != nil {
+			return nil, e
+		}
+		values := make([]string, 0, len(v))
+		for _, x := range v {
+			values = append(values, fmt.Sprintf("%s %d", x.Host, x.Pref))
+		}
+		return values, nil
+	case "TXT":
+		return resolver.LookupTXT(ctx, host)
+	case "NS":
+		v, e := resolver.LookupNS(ctx, host)
+		if e != nil {
+			return nil, e
+		}
+		values := make([]string, 0, len(v))
+		for _, x := range v {
+			values = append(values, x.Host)
+		}
+		return values, nil
+	default:
+		return nil, fmt.Errorf("unsupported record type")
+	}
+}
+
+func validateResolvedTarget(ctx context.Context, target string) error {
+	host, _, err := net.SplitHostPort(target)
+	if err != nil {
+		return fmt.Errorf("invalid TCP target")
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if !publicAddress(ip) {
+			return fmt.Errorf("private or special-use IP targets are not allowed")
+		}
+		return nil
+	}
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return fmt.Errorf("localhost targets are not allowed")
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return fmt.Errorf("resolve TCP host: %w", err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("TCP host has no addresses")
+	}
+	for _, ip := range ips {
+		if !publicAddress(ip) {
+			return fmt.Errorf("private or special-use IP targets are not allowed")
+		}
+	}
+	return nil
+}
+
+func applyAuthentication(req *http.Request, m MonitorConfig) error {
+	if m.Authentication == nil {
+		return nil
+	}
+	raw := os.Getenv("INALY_MONITOR_SECRETS")
+	if raw == "" {
+		return fmt.Errorf("INALY_MONITOR_SECRETS is required for configured authentication")
+	}
+	var secrets map[string]struct {
+		Type     string `json:"type"`
+		Token    string `json:"token"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal([]byte(raw), &secrets); err != nil {
+		return fmt.Errorf("INALY_MONITOR_SECRETS is invalid JSON")
+	}
+	secret, ok := secrets[m.Authentication.SecretRef]
+	if !ok {
+		return fmt.Errorf("authentication secret_ref was not found")
+	}
+	switch secret.Type {
+	case "bearer":
+		if secret.Token == "" {
+			return fmt.Errorf("bearer token is empty")
+		}
+		req.Header.Set("Authorization", "Bearer "+secret.Token)
+	case "basic":
+		req.SetBasicAuth(secret.Username, secret.Password)
+	default:
+		return fmt.Errorf("authentication type must be bearer or basic")
+	}
+	return nil
 }
 
 func statusForError(err error) string {
@@ -160,9 +311,10 @@ func statusForError(err error) string {
 	}
 	return "failure"
 }
-func safeError(err error) string { // Avoid logging URLs that may contain userinfo/query secrets.
+func safeError(err error) string {
 	if ue, ok := err.(*url.Error); ok {
 		return ue.Err.Error()
 	}
 	return err.Error()
 }
+

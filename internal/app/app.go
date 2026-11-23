@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -98,27 +99,7 @@ func Execute(ctx context.Context, o Options) (Output, error) {
 		r := check(ctx, m, timeout)
 		out.Results = append(out.Results, r)
 		state.LastRun = &r.FinishedAt
-		switch r.Status {
-		case "failure", "timeout":
-			state.FailureCount++
-			state.RecoveryCount = 0
-			if state.FailureCount >= failLimit {
-				state.State = "outage"
-			} else if state.State == "" {
-				state.State = "unknown"
-			}
-		case "success":
-			state.FailureCount = 0
-			if state.State == "outage" {
-				state.RecoveryCount++
-				if state.RecoveryCount >= recoverLimit {
-					state.State = "operational"
-					state.RecoveryCount = 0
-				}
-			} else {
-				state.State = "operational"
-			}
-		}
+		state = advanceState(state, r.Status, failLimit, recoverLimit)
 		states[m.ID] = state
 	}
 	if out.Due == 0 {
@@ -135,16 +116,93 @@ func persist(out Output, states map[string]MonitorState, now time.Time) error {
 		return nil
 	}
 	statePath := filepath.Join("data", "state", "monitor_states.json")
-	if err := writeJSON(statePath, states); err != nil {
-		return fmt.Errorf("save states: %w", err)
-	}
-	if err := writeJSON(filepath.Join("data", "state", "current.json"), out.Results); err != nil {
-		return fmt.Errorf("save current results: %w", err)
-	}
 	report := Report{SchemaVersion: 1, GeneratedAt: now, Checks: out.Results}
 	day := now.Format("2006/01/02")
-	if err := writeJSON(filepath.Join("data", "history", day+".json"), report); err != nil {
-		return fmt.Errorf("save history: %w", err)
+	paths := map[string]any{statePath: states, filepath.Join("data", "state", "current.json"): out.Results}
+	// Append a day's checks instead of replacing earlier workflow runs.
+	historyPath := filepath.Join("data", "history", day+".json")
+	var existing Report
+	if b, err := os.ReadFile(historyPath); err == nil {
+		if err = json.Unmarshal(b, &existing); err != nil {
+			return fmt.Errorf("decode history: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	existing.SchemaVersion = 1
+	existing.GeneratedAt = now
+	existing.Checks = append(existing.Checks, report.Checks...)
+	paths[historyPath] = existing
+	return atomicWriteJSON(paths)
+}
+
+func advanceState(s MonitorState, status string, failLimit, recoverLimit int) MonitorState {
+	switch status {
+	case "failure", "timeout":
+		s.FailureCount++
+		s.RecoveryCount = 0
+		if s.FailureCount >= failLimit {
+			s.State = "outage"
+		} else if s.State == "" {
+			s.State = "unknown"
+		}
+	case "success":
+		s.FailureCount = 0
+		if s.State == "outage" {
+			s.RecoveryCount++
+			if s.RecoveryCount >= recoverLimit {
+				s.State = "operational"
+				s.RecoveryCount = 0
+			}
+		} else {
+			s.State = "operational"
+		}
+	}
+	return s
+}
+
+var persistMu sync.Mutex
+
+func atomicWriteJSON(values map[string]any) error {
+	persistMu.Lock()
+	defer persistMu.Unlock()
+	temps := map[string]string{}
+	for path, value := range values {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		b, err := json.MarshalIndent(value, "", "  ")
+		if err != nil {
+			return err
+		}
+		b = append(b, '\n')
+		f, err := os.CreateTemp(filepath.Dir(path), ".inaly-pulse-*.tmp")
+		if err != nil {
+			return err
+		}
+		if _, err = f.Write(b); err != nil {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+			return err
+		}
+		if err = f.Sync(); err != nil {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+			return err
+		}
+		if err = f.Close(); err != nil {
+			_ = os.Remove(f.Name())
+			return err
+		}
+		temps[path] = f.Name()
+	}
+	for path, tmp := range temps {
+		if err := os.Rename(tmp, path); err != nil {
+			for _, left := range temps {
+				_ = os.Remove(left)
+			}
+			return err
+		}
 	}
 	return nil
 }

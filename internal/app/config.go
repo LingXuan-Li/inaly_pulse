@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,15 +25,20 @@ type Settings struct {
 }
 
 type MonitorConfig struct {
-	ID       string     `json:"id"`
-	Name     string     `json:"name"`
-	Type     string     `json:"type"`
-	Enabled  bool       `json:"enabled"`
-	Target   string     `json:"target"`
-	Interval string     `json:"interval"`
-	Timeout  string     `json:"timeout,omitempty"`
-	HTTP     HTTPConfig `json:"http,omitempty"`
-	DNS      DNSConfig  `json:"dns,omitempty"`
+	ID             string                `json:"id"`
+	Name           string                `json:"name"`
+	Type           string                `json:"type"`
+	Enabled        bool                  `json:"enabled"`
+	Target         string                `json:"target"`
+	Interval       string                `json:"interval"`
+	Timeout        string                `json:"timeout,omitempty"`
+	HTTP           HTTPConfig            `json:"http,omitempty"`
+	DNS            DNSConfig             `json:"dns,omitempty"`
+	Authentication *AuthenticationConfig `json:"authentication,omitempty"`
+}
+
+type AuthenticationConfig struct {
+	SecretRef string `json:"secret_ref"`
 }
 
 type HTTPConfig struct {
@@ -81,6 +89,9 @@ func (c Config) Validate() error {
 		if m.ID == "" || m.Name == "" || m.Target == "" {
 			return fmt.Errorf("%s: id, name, and target are required", p)
 		}
+		if strings.ContainsAny(m.ID, "/\\") || m.ID == "." || m.ID == ".." {
+			return fmt.Errorf("%s: id must not contain path separators", p)
+		}
 		if seen[m.ID] {
 			return fmt.Errorf("%s: duplicate monitor id %q", p, m.ID)
 		}
@@ -100,6 +111,9 @@ func (c Config) Validate() error {
 			if !validHTTPURL(m.Target) {
 				return fmt.Errorf("%s: target must be an absolute http or https URL", p)
 			}
+			if err := validateMonitorURL(m.Target); err != nil {
+				return fmt.Errorf("%s: %w", p, err)
+			}
 			if m.HTTP.Method != "" && m.HTTP.Method != "GET" && m.HTTP.Method != "POST" && m.HTTP.Method != "HEAD" {
 				return fmt.Errorf("%s: http.method must be GET, POST, or HEAD", p)
 			}
@@ -109,8 +123,16 @@ func (c Config) Validate() error {
 				}
 			}
 		case "tcp":
-			if _, _, err := splitHostPort(m.Target); err != nil {
+			host, port, err := splitHostPort(m.Target)
+			if err != nil {
 				return fmt.Errorf("%s: tcp target must be host:port", p)
+			}
+			if host == "" {
+				return fmt.Errorf("%s: tcp host is required", p)
+			}
+			n, e := strconv.Atoi(port)
+			if e != nil || n < 1 || n > 65535 {
+				return fmt.Errorf("%s: tcp port must be between 1 and 65535", p)
 			}
 		case "dns":
 			if m.DNS.RecordType != "" && !oneOf(m.DNS.RecordType, "A", "AAAA", "CNAME", "MX", "TXT", "NS") {
@@ -126,6 +148,9 @@ func (c Config) Validate() error {
 		default:
 			return fmt.Errorf("%s: unsupported monitor type %q", p, m.Type)
 		}
+		if m.Authentication != nil && m.Authentication.SecretRef != "" && !secretRefRE.MatchString(m.Authentication.SecretRef) {
+			return fmt.Errorf("%s: invalid authentication.secret_ref", p)
+		}
 	}
 	if c.Settings.Tolerance != "" {
 		d, e := time.ParseDuration(c.Settings.Tolerance)
@@ -135,6 +160,8 @@ func (c Config) Validate() error {
 	}
 	return nil
 }
+
+var secretRefRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func oneOf(s string, values ...string) bool {
 	for _, v := range values {
