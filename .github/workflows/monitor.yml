@@ -9,9 +9,9 @@ on:
         type: string
       force:
         description: Run enabled monitors even if their interval has not elapsed
-        required: false
+        required: true
         type: boolean
-        default: false
+        default: true
     secrets:
       INALY_APP_PRIVATE_KEY:
         required: true
