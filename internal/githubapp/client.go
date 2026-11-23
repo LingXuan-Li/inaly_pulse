@@ -254,7 +254,13 @@ func (c *Client) request(ctx context.Context, h *http.Client, method, endpoint, 
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("GitHub API returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return fmt.Errorf(
+			"GitHub API request failed: method=%s url=%s status=%d response=%s",
+			method,
+			endpoint,
+			resp.StatusCode,
+			strings.TrimSpace(string(b)),
+		)
 	}
 	if out != nil {
 		if err := json.Unmarshal(b, out); err != nil {
