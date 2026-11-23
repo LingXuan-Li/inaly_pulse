@@ -11,6 +11,7 @@ import (
 
 type Options struct {
 	ConfigPath string
+	DataDir    string
 	Run        bool
 	Force      bool
 	Now        time.Time
@@ -45,6 +46,9 @@ type Output struct {
 }
 
 func Execute(ctx context.Context, o Options) (Output, error) {
+	if o.DataDir == "" {
+		o.DataDir = "data"
+	}
 	c, err := LoadConfig(o.ConfigPath)
 	if err != nil {
 		return Output{}, err
@@ -59,7 +63,7 @@ func Execute(ctx context.Context, o Options) (Output, error) {
 	}
 	o.Now = o.Now.UTC()
 	states := map[string]MonitorState{}
-	statePath := filepath.Join("data", "state", "monitor_states.json")
+	statePath := filepath.Join(o.DataDir, "state", "monitor_states.json")
 	if b, e := os.ReadFile(statePath); e == nil {
 		if e = json.Unmarshal(b, &states); e != nil {
 			return Output{}, fmt.Errorf("decode monitor states: %w", e)
@@ -104,22 +108,22 @@ func Execute(ctx context.Context, o Options) (Output, error) {
 	if out.Due == 0 {
 		out.Message = "no enabled monitors are due"
 	}
-	if err := persist(out, states, o.Now); err != nil {
+	if err := persist(out, states, o.Now, o.DataDir); err != nil {
 		return Output{}, err
 	}
 	return out, nil
 }
 
-func persist(out Output, states map[string]MonitorState, now time.Time) error {
+func persist(out Output, states map[string]MonitorState, now time.Time, dataDir string) error {
 	if len(out.Results) == 0 {
 		return nil
 	}
-	statePath := filepath.Join("data", "state", "monitor_states.json")
+	statePath := filepath.Join(dataDir, "state", "monitor_states.json")
 	report := Report{SchemaVersion: 1, GeneratedAt: now, Checks: out.Results}
 	day := now.Format("2006/01/02")
-	paths := map[string]any{statePath: states, filepath.Join("data", "state", "current.json"): out.Results}
+	paths := map[string]any{statePath: states, filepath.Join(dataDir, "state", "current.json"): out.Results}
 	// Append a day's checks instead of replacing earlier workflow runs.
-	historyPath := filepath.Join("data", "history", day+".json")
+	historyPath := filepath.Join(dataDir, "history", day+".json")
 	var existing Report
 	if b, err := os.ReadFile(historyPath); err == nil {
 		if err = json.Unmarshal(b, &existing); err != nil {
