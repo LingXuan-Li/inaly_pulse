@@ -79,7 +79,7 @@ func (c *Client) commitFilesOnce(ctx context.Context, owner, repo, message strin
 	if repository.DefaultBranch == "" {
 		return fmt.Errorf("repository default branch was not returned")
 	}
-	refURL := apiBase + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/git/ref/heads/" + url.PathEscape(repository.DefaultBranch)
+	refURL := apiBase + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/git/refs/heads/" + url.PathEscape(repository.DefaultBranch)
 	var ref struct {
 		Object struct {
 			SHA string `json:"sha"`
