@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -10,6 +11,10 @@ import (
 
 	"inaly_pulse/internal/notifier"
 )
+
+type errorDoer struct{ err error }
+
+func (d errorDoer) Do(*http.Request) (*http.Response, error) { return nil, d.err }
 
 type fakeDoer struct {
 	responses []*http.Response
@@ -44,5 +49,17 @@ func TestWebhookRejectsUntrustedEndpoint(t *testing.T) {
 	w := Webhook{URL: "https://example.org/api/webhooks/secret"}
 	if err := w.Notify(context.Background(), notifier.Event{}); err == nil {
 		t.Fatal("expected untrusted endpoint rejection")
+	}
+}
+
+func TestWebhookDoesNotExposeURLOnTransportError(t *testing.T) {
+	secretURL := "https://discord.com/api/webhooks/123/super-secret-token"
+	w := Webhook{URL: secretURL, HTTP: errorDoer{err: errors.New("Post " + secretURL + ": connection refused")}, MaxAttempts: 1}
+	err := w.Notify(context.Background(), notifier.Event{})
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	if strings.Contains(err.Error(), secretURL) || strings.Contains(err.Error(), "super-secret-token") {
+		t.Fatalf("error leaked webhook URL: %v", err)
 	}
 }

@@ -164,10 +164,13 @@ func ensureIssue(ctx context.Context, o Options, inc *app.Incident, createIfMiss
 		if summary != "" {
 			body += "\n\nInitial error: " + summary
 		}
-		if len(inc.IssueHistory) > 0 {
+		// Record the previous mapping before building the replacement body so the
+		// first recreated issue is clearly identified as such.
+		wasRecreated := len(inc.IssueHistory) > 0
+		if wasRecreated {
 			body += "\n\nThis issue was recreated after its previous issue was deleted."
 		}
-		created, err := o.App.CreateIssue(ctx, o.Owner, o.Repo, "[Inaly Pulse] Outage: "+inc.MonitorName, body)
+		created, err := o.App.CreateIncidentIssue(ctx, o.Owner, o.Repo, inc.ID, "[Inaly Pulse] Outage: "+inc.MonitorName, body)
 		if err != nil {
 			return nil, err
 		}

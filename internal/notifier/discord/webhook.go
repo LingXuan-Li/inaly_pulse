@@ -50,7 +50,9 @@ func (w *Webhook) Notify(ctx context.Context, e notifier.Event) error {
 		resp, err := h.Do(req)
 		if err != nil {
 			if attempt+1 == max {
-				return err
+				// url.Error includes the full request URL, which contains the
+				// webhook token in its path. Never persist or log it.
+				return fmt.Errorf("Discord webhook request failed (%T)", err)
 			}
 			if err := w.sleep(ctx, time.Duration(attempt+1)*time.Second); err != nil {
 				return err
