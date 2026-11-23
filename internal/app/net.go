@@ -72,6 +72,7 @@ func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckRes
 			break
 		}
 		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil // Direct dialing is required for the resolved-IP safety check.
 		transport.DialContext = secureDialContext
 		client := &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if err := validateMonitorURL(req.URL.String()); err != nil {

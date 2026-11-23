@@ -148,8 +148,8 @@ func (c Config) Validate() error {
 		default:
 			return fmt.Errorf("%s: unsupported monitor type %q", p, m.Type)
 		}
-		if m.Authentication != nil && m.Authentication.SecretRef != "" && !secretRefRE.MatchString(m.Authentication.SecretRef) {
-			return fmt.Errorf("%s: invalid authentication.secret_ref", p)
+		if m.Authentication != nil && (m.Type != "http" || !secretRefRE.MatchString(m.Authentication.SecretRef)) {
+			return fmt.Errorf("%s: authentication requires an HTTP monitor and a valid secret_ref", p)
 		}
 	}
 	if c.Settings.Tolerance != "" {
