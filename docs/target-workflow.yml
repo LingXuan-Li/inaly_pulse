@@ -9,7 +9,7 @@ on:
       force:
         description: Run all enabled monitors now
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
