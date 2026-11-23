@@ -8,15 +8,18 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,6 +44,24 @@ type FileChange struct {
 
 // CommitFiles applies all changes in one Git Data API commit to the default branch.
 func (c *Client) CommitFiles(ctx context.Context, owner, repo, message string, files []FileChange) error {
+	if len(files) == 0 {
+		return nil
+	}
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = c.commitFilesOnce(ctx, owner, repo, message, files)
+		if err == nil {
+			return nil
+		}
+		lower := strings.ToLower(err.Error())
+		if !strings.Contains(lower, "not a fast forward") && !strings.Contains(lower, "reference update failed") {
+			return err
+		}
+	}
+	return fmt.Errorf("git ref update conflicted after 3 attempts: %w", err)
+}
+
+func (c *Client) commitFilesOnce(ctx context.Context, owner, repo, message string, files []FileChange) error {
 	token, err := c.InstallationToken(ctx, owner, repo)
 	if err != nil {
 		return err
@@ -74,6 +95,34 @@ func (c *Client) CommitFiles(ctx context.Context, owner, repo, message string, f
 	}
 	if err := c.request(ctx, h, http.MethodGet, apiBase+"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/git/commits/"+ref.Object.SHA, token.Value, nil, &commit); err != nil {
 		return err
+	}
+	var currentTree struct {
+		Tree []struct {
+			Path string `json:"path"`
+			SHA  string `json:"sha"`
+			Type string `json:"type"`
+		} `json:"tree"`
+	}
+	treeURL := apiBase + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/git/trees/" + commit.Tree.SHA + "?recursive=1"
+	if err := c.request(ctx, h, http.MethodGet, treeURL, token.Value, nil, &currentTree); err != nil {
+		return err
+	}
+	current := map[string]string{}
+	for _, entry := range currentTree.Tree {
+		if entry.Type == "blob" {
+			current[entry.Path] = entry.SHA
+		}
+	}
+	unchanged := true
+	for _, f := range files {
+		sum := sha1.Sum(append(append([]byte("blob "+strconv.Itoa(len(f.Content))), 0), f.Content...))
+		if current[f.Path] != hex.EncodeToString(sum[:]) {
+			unchanged = false
+			break
+		}
+	}
+	if unchanged {
+		return nil
 	}
 	type treeEntry struct {
 		Path string `json:"path"`

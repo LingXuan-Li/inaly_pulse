@@ -17,6 +17,8 @@ on:
         required: true
       INALY_MONITOR_SECRETS:
         required: false
+      DISCORD_WEBHOOK_URL:
+        required: false
 
 permissions:
   contents: read
@@ -52,6 +54,7 @@ jobs:
           INALY_APP_ID: ${{ inputs.app_id }}
           INALY_APP_PRIVATE_KEY: ${{ secrets.INALY_APP_PRIVATE_KEY }}
           INALY_MONITOR_SECRETS: ${{ secrets.INALY_MONITOR_SECRETS }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INALY_FORCE: ${{ inputs.force }}
         run: |

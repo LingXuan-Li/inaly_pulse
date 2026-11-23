@@ -19,9 +19,18 @@ type Config struct {
 }
 
 type Settings struct {
-	Tolerance         string `json:"tolerance,omitempty"`
-	FailureThreshold  int    `json:"failure_threshold,omitempty"`
-	RecoveryThreshold int    `json:"recovery_threshold,omitempty"`
+	Tolerance         string               `json:"tolerance,omitempty"`
+	FailureThreshold  int                  `json:"failure_threshold,omitempty"`
+	RecoveryThreshold int                  `json:"recovery_threshold,omitempty"`
+	Notifications     NotificationSettings `json:"notifications,omitempty"`
+}
+
+type NotificationSettings struct {
+	Discord DiscordSettings `json:"discord,omitempty"`
+}
+type DiscordSettings struct {
+	Enabled  bool            `json:"enabled,omitempty"`
+	NotifyOn map[string]bool `json:"notify_on,omitempty"`
 }
 
 type MonitorConfig struct {
@@ -82,6 +91,11 @@ func (c Config) Validate() error {
 	}
 	if len(c.Monitors) == 0 {
 		return fmt.Errorf("monitors must contain at least one monitor")
+	}
+	for event := range c.Settings.Notifications.Discord.NotifyOn {
+		if !oneOf(event, "incident_created", "incident_updated", "incident_resolved", "maintenance", "maintenance_started", "maintenance_ended") {
+			return fmt.Errorf("settings.notifications.discord.notify_on contains unknown event %q", event)
+		}
 	}
 	seen := map[string]bool{}
 	for i, m := range c.Monitors {

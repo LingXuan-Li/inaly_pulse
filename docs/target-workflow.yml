@@ -23,3 +23,4 @@ jobs:
     secrets:
       INALY_APP_PRIVATE_KEY: ${{ secrets.INALY_APP_PRIVATE_KEY }}
       INALY_MONITOR_SECRETS: ${{ secrets.INALY_MONITOR_SECRETS }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

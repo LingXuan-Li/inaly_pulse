@@ -32,7 +32,7 @@ go run . -run -force -data-dir .tmp-pulse-data
 
 ## GitHub Actionsで使う
 
-GitHub Appの作成とインストール後、対象リポジトリのRepository variableに `INALY_APP_ID`、Actions secretsに `INALY_APP_PRIVATE_KEY` を登録します。認証付きHTTP監視を使うときは `INALY_MONITOR_SECRETS` も登録します。AppにはMetadata read、Contents writeを設定し、対象リポジトリだけにインストールしてください。
+GitHub Appの作成とインストール後、対象リポジトリのRepository variableに `INALY_APP_ID`、Actions secretsに `INALY_APP_PRIVATE_KEY` を登録します。認証付きHTTP監視は `INALY_MONITOR_SECRETS`、Discord通知は `DISCORD_WEBHOOK_URL` も登録します。AppにはMetadata read、Contents read/write、Issues read/writeを設定し、対象リポジトリだけにインストールしてください。
 
 対象リポジトリに [`docs/target-workflow.yml`](docs/target-workflow.yml) の内容を `.github/workflows/inaly-pulse.yml` として配置します。Reusable workflowは公開リポジトリ `LingXuan-Li/inaly_pulse` の `main` branchを参照します。独自forkやtagを使う場合はworkflowの参照先を変更してください。
 
@@ -81,7 +81,34 @@ GitHub Appの作成とインストール後、対象リポジトリのRepository
 }
 ```
 
-Interval は10分以上の10分単位です。`ping` はこの初期実装では拒否します。DNSはOS標準、Google、Cloudflare Resolverに問い合わせますが、TTL/RCODEは取得しません。GitHub App認証とGit Data API保存は実装済みです。GitHub IssuesによるIncident管理、Maintenance、Outbox/Discord通知、レポート集計はまだ未実装です。本番運用に必要なこれらの仕様は後続実装が必要です。
+### Issue・Discord・Maintenance
+
+障害が閾値に達すると、Incident IDを本文マーカーに持つIssueを作成します。継続中は同じIssueへコメントし、復旧が確定するとコメントしてクローズします。手動クローズは再オープンしません。Issueが削除されていれば同じIncident IDのIssueを作り直します。
+
+Discord通知は次のように `settings.notifications.discord` で有効化し、通知種別を制御します。
+
+```json
+"settings": {
+  "failure_threshold": 3,
+  "recovery_threshold": 2,
+  "notifications": {
+    "discord": {
+      "enabled": true,
+      "notify_on": {
+        "incident_created": true,
+        "incident_updated": true,
+        "incident_resolved": true,
+        "maintenance_started": false,
+        "maintenance_ended": false
+      }
+    }
+  }
+}
+```
+
+メンテナンス予定は `data/maintenance/schedules.json` に、[例](docs/maintenance-schedules.example.json)の形式でUTC指定します。`mode: "suppress"` は監視を続け、障害Issue・Discord反映を保留します。`mode: "skip"` は対象監視を実行しません。終了後の実行でIncidentを照合して保留イベントを再処理します。
+
+Outboxは `data/outbox/pending.json` に記録します。Discord Webhookは冪等キーを受け付けないため、送信成功後に保存が失敗した場合の重複通知可能性は残ります。GitHub Issues、Discord Outbox、Maintenanceは実装済みですが、AvailabilityレポートやOutbox保持期間など仕様全体の未実装項目は残っています。
 
 ## 開発
 
