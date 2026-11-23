@@ -19,7 +19,7 @@ func validHTTPURL(s string) bool {
 	return e == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https")
 }
 
-func splitHostPort(s string)(string,string,error){return net.SplitHostPort(s)}
+func splitHostPort(s string) (string, string, error) { return net.SplitHostPort(s) }
 
 func validateMonitorURL(raw string) error {
 	u, err := url.Parse(raw)
@@ -317,4 +317,3 @@ func safeError(err error) string {
 	}
 	return err.Error()
 }
-

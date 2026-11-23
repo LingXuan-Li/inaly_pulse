@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 )
 
@@ -161,11 +160,7 @@ func advanceState(s MonitorState, status string, failLimit, recoverLimit int) Mo
 	return s
 }
 
-var persistMu sync.Mutex
-
 func atomicWriteJSON(values map[string]any) error {
-	persistMu.Lock()
-	defer persistMu.Unlock()
 	temps := map[string]string{}
 	for path, value := range values {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
