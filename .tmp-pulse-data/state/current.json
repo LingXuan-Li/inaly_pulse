@@ -1,0 +1,20 @@
+[
+  {
+    "monitor_id": "example-http",
+    "type": "http",
+    "status": "failure",
+    "started_at": "2026-11-23T05:17:36.7986682Z",
+    "finished_at": "2026-11-23T05:17:36.8254175Z",
+    "duration": 26749300,
+    "error": "resolve target: lookup google.com: no such host"
+  },
+  {
+    "monitor_id": "example-dns",
+    "type": "dns",
+    "status": "failure",
+    "started_at": "2026-11-23T05:17:36.8254175Z",
+    "finished_at": "2026-11-23T05:17:46.8305834Z",
+    "duration": 10005165900,
+    "error": "all DNS resolvers failed"
+  }
+]
