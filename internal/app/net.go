@@ -14,6 +14,14 @@ import (
 	"time"
 )
 
+const (
+	// maxBodyBytes は読み取るレスポンス本文の上限。超過しても監視失敗にはしない。
+	maxBodyBytes = 1 << 20
+	// defaultUserAgent は Headers で User-Agent が未指定のときに使う。
+	// Go 既定の UA は Wikipedia などに 403 で拒否されるため、識別可能な UA を送る。
+	defaultUserAgent = "InalyPulse/1.0 (+https://github.com/LingXuan-Li/inaly_pulse)"
+)
+
 func validHTTPURL(s string) bool {
 	u, e := url.ParseRequestURI(s)
 	return e == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https")
@@ -66,6 +74,9 @@ func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckRes
 		if m.HTTP.ContentType != "" {
 			req.Header.Set("Content-Type", m.HTTP.ContentType)
 		}
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", defaultUserAgent)
+		}
 		if err := applyAuthentication(req, m); err != nil {
 			r.Status = "failure"
 			r.Error = err.Error()
@@ -93,24 +104,50 @@ func check(ctx context.Context, m MonitorConfig, timeout time.Duration) CheckRes
 			break
 		}
 		defer resp.Body.Close()
-		body := []byte{}
+		var body []byte
+		bodyBytes := 0
+		truncated := false
 		if method != http.MethodHead {
-			body, err = io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
-			if err != nil {
-				r.Status = "failure"
-				r.Error = "read response body failed"
-				break
-			}
-			if len(body) > 1<<20 {
-				r.Status = "failure"
-				r.Error = "response body exceeds 1 MiB"
-				break
+			if m.HTTP.ExpectedText != "" {
+				// expected_text がある場合のみ本文を保持して検索する(先頭 maxBodyBytes まで)。
+				body, err = io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+				if err != nil {
+					r.Status = "failure"
+					r.Error = "read response body failed"
+					break
+				}
+				if len(body) > maxBodyBytes {
+					body = body[:maxBodyBytes]
+					truncated = true
+				}
+				bodyBytes = len(body)
+			} else {
+				// 本文を使わない場合は上限まで読み捨てるだけ。大きなページでも失敗にしない。
+				n, copyErr := io.Copy(io.Discard, io.LimitReader(resp.Body, maxBodyBytes+1))
+				if copyErr != nil {
+					r.Status = "failure"
+					r.Error = "read response body failed"
+					break
+				}
+				if n > maxBodyBytes {
+					n = maxBodyBytes
+					truncated = true
+				}
+				bodyBytes = int(n)
 			}
 		}
-		r.Details = map[string]any{"status_code": resp.StatusCode, "response_bytes": len(body)}
+		details := map[string]any{"status_code": resp.StatusCode, "response_bytes": bodyBytes}
+		if truncated {
+			details["body_truncated"] = true
+		}
+		r.Details = details
 		if m.HTTP.ExpectedText != "" && !strings.Contains(string(body), m.HTTP.ExpectedText) {
 			r.Status = "failure"
-			r.Error = "response did not contain expected_text"
+			if truncated {
+				r.Error = "expected_text not found in the first 1 MiB of the response"
+			} else {
+				r.Error = "response did not contain expected_text"
+			}
 			break
 		}
 		ok := len(m.HTTP.ExpectedStatus) == 0 && resp.StatusCode >= 200 && resp.StatusCode < 400
